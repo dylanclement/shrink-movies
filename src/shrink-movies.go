@@ -111,9 +111,9 @@ func processFile(sourceFile, outDir, tmpDir string) error {
 	}
 
 	// Run ffmpeg on the input file and save to output dir
-	cmd := exec.Command("ffmpeg", "-i", sourceFile, "-c:v", "libx264", "-preset", "slow", "-crf", "28", "-movflags", "+faststart", "-c:a", "copy", destFile)
+	cmd := exec.Command("ffmpeg", "-i", sourceFile, "-c:v", "libx264", "-preset", "medium", "-crf", "28", "-movflags", "+faststart", "-acodec", "aac", "-strict", "experimental", "-ab", "96k", destFile)
 	if err := cmd.Run(); err != nil {
-		log.Error("Could not run ffmpeg on file: ", sourceFile, err)
+		log.Error("Could not run ffmpeg on file: ", sourceFile, err, destFile)
 		return err
 	}
 
