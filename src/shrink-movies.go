@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -47,17 +48,66 @@ func getFileSize(fileName string) int64 {
 	return fileInfo.Size()
 }
 
+// CopyFile Helper function to copy a file
+func CopyFile(src, dst string) error {
+	// open input file
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	// create dest file
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// copy contents from source to destination
+	_, err = io.Copy(out, in)
+	cerr := out.Close()
+	if err != nil {
+		return err
+	}
+	return cerr
+}
+
+// Swaps 2 files
+func swapFiles(inFile, outFile string) string {
+	// create new temp dir
+	swapDir, err := ioutil.TempDir("", "swap")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.RemoveAll(swapDir) // clean up
+
+	// swap files around, first move source to temp, then move dest to source
+	if err := CopyFile(inFile, filepath.Join(swapDir, filepath.Base(inFile))); err != nil {
+		log.Error(err)
+	}
+	os.Remove(inFile)
+
+	destFileName := filepath.Join(filepath.Dir(inFile), filepath.Base(outFile))
+	if err := CopyFile(outFile, destFileName); err != nil {
+		log.Error(err)
+	}
+	os.Remove(outFile)
+
+	return destFileName
+}
+
 // Processes a single photo file, copying it to the output dir and creating thumbnails etc. in S3
 func processFile(sourceFile, outDir, tmpDir string) error {
 	modTime := getFileModTime(sourceFile)
 
 	// Get an output file name, make all files mp4  and make sure we can support multiple files in the same dir
-	var destFile string
+	destFile := filepath.Join(tmpDir, modTime.Format("20060102_150405")+".mp4")
 	for i := 1; ; i++ {
-		destFile = filepath.Join(tmpDir, fmt.Sprintf(modTime.Format("20060102")+"_%04d.mp4", i))
 		if _, err := os.Stat(destFile); os.IsNotExist(err) {
 			break
 		}
+		destFile = filepath.Join(tmpDir, fmt.Sprintf(modTime.Format("20060102_150405")+"_%04d.mp4", i))
 	}
 
 	// Run ffmpeg on the input file and save to output dir
@@ -67,15 +117,18 @@ func processFile(sourceFile, outDir, tmpDir string) error {
 		return err
 	}
 
-	// Make sure new file has the same mod time as original file
-	if err := os.Chtimes(destFile, modTime, modTime); err != nil {
-		log.Error(err)
-	}
-
 	// Check what the ratio input/output is
 	inSize := getFileSize(sourceFile)
 	outSize := getFileSize(destFile)
 	ratio := float64(outSize) / float64(inSize)
+	if ratio < 0.93 {
+		newDestFile := swapFiles(sourceFile, destFile)
+		// Make sure new file has the same mod time as original file
+		if err := os.Chtimes(newDestFile, modTime, modTime); err != nil {
+			log.Error(err)
+		}
+	}
+
 	log.Info("Processed File: ", sourceFile, " ratio: ", ratio)
 	return nil
 }
@@ -115,29 +168,10 @@ func process(inDirName, outDirName, tmpDir string) {
 	var fileList []string
 	addFilesToList(inDirName, &fileList)
 
-	// Since we are using go routines to process the files, create channels and sync waits
-	//sem := make(chan int, 4) // Have 8 running concurrently
-	//var wg sync.WaitGroup
-
-	// Organise photos by moving to target folder or uploading it to S3
+	// Process each file in directory
 	for _, fileName := range fileList {
-
-		// Remember to increment the waitgroup by 1 BEFORE starting the goroutine
-		/*wg.Add(1)
-		go func(fileNameInner string) {
-			sem <- 1 // Wait for active queue to drain.
-			err := processFile(fileNameInner, outDirName, tmpDir)
-			if err != nil {
-				log.Fatal(err.Error())
-			}
-
-			wg.Done()
-			<-sem // Done; enable next request to run.
-		}(fileName)
-		*/
 		processFile(fileName, outDirName, tmpDir)
 	}
-	//wg.Wait() // Wait for all goroutines to finish
 }
 
 func main() {
@@ -150,9 +184,8 @@ func main() {
 	}
 
 	// Create temp dir and remember to clean up
-	//tmpDir, _ := ioutil.TempDir("", "shrink-file")
-	//defer os.RemoveAll(tmpDir) // clean up
-	tmpDir := "c:\\temp\\test\\output"
+	tmpDir, _ := ioutil.TempDir("", "shrink-file")
+	defer os.RemoveAll(tmpDir) // clean up
 
 	process(*inDirNamePtr, *outDirNamePtr, tmpDir)
 	log.Info("Done processing: ", *inDirNamePtr)
